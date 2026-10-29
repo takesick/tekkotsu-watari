@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>鉄骨渡り</title>
+<meta name="description" content="スマホを傾けて高層ビルの間の鉄骨を渡る理不尽ゲーム">
+<meta property="og:title" content="鉄骨渡り">
+<meta property="og:description" content="スマホを傾けて鉄骨を渡れ。突風、ざわ…ざわ…、雷、電流。あなたは何m進める？">
+<style>
+  html, body { margin: 0; height: 100%; background: #05060a; overflow: hidden;
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif; color: #f2f2f2;
+    -webkit-user-select: none; user-select: none; touch-action: none; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; }
+  .screen { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 18px; padding: 24px; box-sizing: border-box; text-align: center;
+    background: rgba(5, 6, 10, .88); }
+  .hidden { display: none !important; }
+  h1 { font-size: 56px; margin: 0; letter-spacing: .1em; text-shadow: 0 0 18px #c00; }
+  h2 { font-size: 34px; margin: 0; }
+  p { margin: 0; line-height: 1.7; font-size: 16px; color: #ccc; }
+  .big { font-size: 64px; font-weight: bold; color: #fff; }
+  button { font: inherit; font-size: 20px; font-weight: bold; padding: 14px 32px; border-radius: 6px;
+    border: 2px solid #fff; background: #b00; color: #fff; cursor: pointer; min-width: 220px; }
+  button.sub { background: transparent; }
+  button.x { background: #000; }
+  .small { font-size: 13px; color: #888; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="title" class="screen">
+  <h1>鉄骨渡り</h1>
+  <p>地上74m。幅わずか30cmの鉄骨を渡れ。<br>
+    <b>スマホを左右に傾けて</b>バランスを取り、<br>
+    <b>画面を押している間</b>だけ前へ進む。</p>
+  <p class="small">PCの場合は ←→ / A D で傾き、スペースかクリック長押しで前進</p>
+  <button id="startBtn">渡る</button>
+</div>
+
+<div id="result" class="screen hidden">
+  <h2 id="causeText">転落…</h2>
+  <div class="big"><span id="distText">0</span>m</div>
+  <p id="commentText"></p>
+  <button id="shareBtn" class="x">𝕏 でシェア</button>
+  <button id="retryBtn" class="sub">もう一度渡る</button>
+</div>
+
+<script>
+(() => {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = W * DPR; cv.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- 入力 ----------
+  const input = { tilt: 0, key: 0, walking: false, hasSensor: false };
+  function onOrientation(e) {
+    if (e.gamma == null) return;
+    input.hasSensor = true;
+    const angle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+    let deg = e.gamma;
+    if (angle === 90) deg = e.beta;
+    else if (angle === -90 || angle === 270) deg = -e.beta;
+    input.tilt = Math.max(-1, Math.min(1, deg / 30));
+  }
+  async function enableSensor() {
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        await DeviceOrientationEvent.requestPermission();
+      }
+    } catch (_) { /* センサーなしでもキーボードで遊べる */ }
+    // 許可APIの結果に関係なく登録する（値が来なければキーボード操作のまま）
+    window.addEventListener('deviceorientation', onOrientation);
+  }
+  const keys = {};
+  window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if (e.code === 'Space') { input.walking = true; e.preventDefault(); }
+  });
+  window.addEventListener('keyup', e => {
+    keys[e.code] = false;
+    if (e.code === 'Space') input.walking = false;
+  });
+  cv.addEventListener('pointerdown', () => { input.walking = true; });
+  window.addEventListener('pointerup', () => { input.walking = false; });
+  window.addEventListener('pointercancel', () => { input.walking = false; });
+
+  // ---------- 音 ----------
+  let ac = null;
+  function audio() {
+    if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {} }
+    return ac;
+  }
+  function noise(sec, freq, vol) {
+    const a = audio(); if (!a) return;
+    const buf = a.createBuffer(1, a.sampleRate * sec, a.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+    const src = a.createBufferSource(); src.buffer = buf;
+    const f = a.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq;
+    const g = a.createGain(); g.gain.value = vol;
+    src.connect(f).connect(g).connect(a.destination); src.start();
+  }
+  function tone(sec, f0, f1, vol, type) {
+    const a = audio(); if (!a) return;
+    const o = a.createOscillator(); o.type = type || 'sawtooth';
+    const g = a.createGain(); g.gain.value = vol;
+    o.frequency.setValueAtTime(f0, a.currentTime);
+    o.frequency.exponentialRampToValueAtTime(f1, a.currentTime + sec);
+    g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + sec);
+    o.connect(g).connect(a.destination); o.start(); o.stop(a.currentTime + sec);
+  }
+  function vibrate(p) { if (navigator.vibrate) navigator.vibrate(p); }
+
+  // ---------- 理不尽イベント ----------
+  // 各イベントは start(s) で初期化し、update(s, dt) で毎フレーム力などを加える
+  const EVENTS = [
+    {
+      id: 'wind', name: '突風', dur: 3.2,
+      start(s) { s.ev.dir = Math.random() < .5 ? -1 : 1; noise(3, 600, .5); vibrate(200); },
+      update(s, dt, t) {
+        // 最初の0.6秒は予兆、その後強く吹く
+        const k = t < .6 ? t / .6 * .3 : 1;
+        s.force += s.ev.dir * 2.7 * k * (0.8 + 0.4 * Math.sin(t * 9));
+      },
+    },
+    {
+      id: 'zawa', name: 'ざわ…ざわ…', dur: 6,
+      start(s) {
+        s.ev.marks = [];
+        for (let i = 0; i < 26; i++) s.ev.marks.push({
+          x: Math.random(), y: Math.random() * .9, r: (Math.random() - .5) * .6,
+          size: 24 + Math.random() * 40, ph: Math.random() * 6,
+        });
+        tone(1.2, 90, 60, .15, 'square');
+      },
+      update() {},
+    },
+    {
+      id: 'scream', name: '悲鳴', dur: 4,
+      start(s) { s.ev.lightning = Math.random() < .5;
+        if (s.ev.lightning) { noise(1.6, 3000, .9); vibrate([80, 40, 300]);
+          s.omega += (Math.random() < .5 ? -1 : 1) * 1.1; }
+        else { tone(1.4, 1300, 500, .2); vibrate(400); }
+      },
+      update(s) { s.sens = 2.2; },
+    },
+    {
+      id: 'shock', name: '電流', dur: 7,
+      start(s) { s.ev.still = 0; tone(.5, 120, 120, .12, 'square'); vibrate([50, 50, 50]); },
+      update(s, dt) {
+        s.ev.still = input.walking ? 0 : s.ev.still + dt;
+        if (s.ev.still > .9) die('感電', '電流が流れる鉄骨で立ち止まった');
+      },
+    },
+  ];
+
+  // ---------- 状態 ----------
+  let s = null;
+  let state = 'title';
+  function reset() {
+    s = {
+      theta: 0, omega: 0, dist: 0, t: 0, noise: 0, force: 0, sens: 1,
+      nextEvent: 25, event: null, ev: {}, evT: 0, banner: null, bannerT: 0,
+      walkPhase: 0, fallT: 0, cause: '', comment: '', flash: 0, lastEvent: null,
+    };
+  }
+  reset();
+
+  function startEvent() {
+    let pool = EVENTS.filter(e => e !== s.lastEvent);
+    const e = pool[Math.floor(Math.random() * pool.length)];
+    s.event = e; s.lastEvent = e; s.ev = {}; s.evT = 0;
+    e.start(s);
+    let label = e.name;
+    if (e.id === 'scream') label = s.ev.lightning ? '雷' : '前の挑戦者の悲鳴';
+    if (e.id === 'shock') label = '電流 ON ── 止まるな';
+    if (e.id === 'scream' && s.ev.lightning) s.flash = 1;
+    s.banner = label; s.bannerT = 2.2;
+  }
+
+  function die(cause, comment) {
+    if (state !== 'play') return;
+    state = 'falling'; s.cause = cause; s.comment = comment; s.fallT = 0;
+    tone(1.6, 900, 80, .25); vibrate(600);
+  }
+
+  // ---------- 更新 ----------
+  function update(dt) {
+    if (state === 'play') {
+      s.t += dt;
+      // 操作量：センサーかキーボード
+      const kTarget = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
+      input.key += (kTarget - input.key) * Math.min(1, dt * 6);
+      const u = input.hasSensor ? input.tilt : input.key;
+
+      // 距離で難易度アップ
+      const diff = 1 + s.dist / 150;
+      s.force = 0; s.sens = 1;
+      if (s.event) {
+        s.evT += dt;
+        s.event.update(s, dt, s.evT);
+        if (s.evT >= s.event.dur) s.event = null;
+      }
+      if (state !== 'play') return;
+
+      // ふらつき（歩いていると大きい）
+      const amp = (input.walking ? 2.4 : 1.0) * diff;
+      s.noise += ((Math.random() - .5) * amp * 6 - s.noise * 1.5) * dt;
+
+      const acc = 3.0 * diff * Math.sin(s.theta) + s.noise + s.force + 4.0 * s.sens * u - 1.4 * s.omega;
+      s.omega += acc * dt;
+      s.theta += s.omega * dt;
+
+      if (input.walking) {
+        s.dist += 2.2 * dt;
+        s.walkPhase += dt * 9;
+      }
+      if (s.dist >= s.nextEvent && !s.event) {
+        startEvent();
+        s.nextEvent += 35 + Math.random() * 20;
+      }
+      if (Math.abs(s.theta) > 0.62) {
+        const why = s.event && s.event.id === 'wind' ? ['転落', '突風に煽られて落ちた']
+          : s.event && s.event.id === 'zawa' ? ['転落', 'ざわ…ざわ…で足元を見失った']
+          : s.event && s.event.id === 'scream' ? ['転落', s.ev.lightning ? '雷に驚いて足を踏み外した' : '悲鳴につられて落ちた']
+          : ['転落', 'バランスを崩して落ちた'];
+        die(why[0], why[1]);
+      }
+    } else if (state === 'falling') {
+      s.fallT += dt;
+      s.omega += Math.sign(s.theta || 1) * 6 * dt;
+      s.theta += s.omega * dt;
+      if (s.fallT > 1.4) showResult();
+    }
+    if (s.bannerT > 0) s.bannerT -= dt;
+    if (s.flash > 0) s.flash -= dt * 1.8;
+  }
+
+  // ---------- 描画 ----------
+  const stars = Array.from({ length: 80 }, () => ({ x: Math.random(), y: Math.random() * .45, r: Math.random() * 1.4 }));
+  const lights = Array.from({ length: 140 }, () => ({ x: Math.random(), y: .55 + Math.random() * .45, c: Math.random() }));
+
+  function draw() {
+    ctx.save();
+    ctx.fillStyle = '#05060a'; ctx.fillRect(0, 0, W, H);
+
+    // 画面全体をプレイヤーの傾きに合わせて少し揺らす
+    const roll = -s.theta * .35;
+    ctx.translate(W / 2, H * .8); ctx.rotate(roll); ctx.translate(-W / 2, -H * .8);
+
+    const vpY = H * .38;
+    // 夜空と街明かり
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#080a18'); g.addColorStop(.45, '#121633'); g.addColorStop(1, '#040408');
+    ctx.fillStyle = g; ctx.fillRect(-W, -H, W * 3, H * 3);
+    ctx.fillStyle = '#fff';
+    for (const st of stars) { ctx.globalAlpha = .6; ctx.fillRect(st.x * W, st.y * H, st.r, st.r); }
+    for (const l of lights) {
+      ctx.globalAlpha = .5 + .3 * Math.sin(s.t * 2 + l.c * 20);
+      ctx.fillStyle = l.c < .7 ? '#ffd27a' : '#ff4040';
+      ctx.fillRect(l.x * W, l.y * H, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+    // 向こう側のビル
+    ctx.fillStyle = '#1b1e2c';
+    ctx.fillRect(W / 2 - W * .09, vpY - H * .1, W * .18, H * .35);
+    ctx.fillStyle = '#ffdd88';
+    ctx.fillRect(W / 2 - 6, vpY - 10, 12, 10);
+
+    // 鉄骨（透視図）
+    const botY = H + 20, botHalf = Math.max(70, W * .16), topHalf = 3;
+    ctx.fillStyle = '#5a5f6c';
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - topHalf, vpY); ctx.lineTo(W / 2 + topHalf, vpY);
+    ctx.lineTo(W / 2 + botHalf, botY); ctx.lineTo(W / 2 - botHalf, botY); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#3a3e48';
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - botHalf, botY); ctx.lineTo(W / 2 - topHalf, vpY);
+    ctx.lineTo(W / 2 - topHalf, vpY + 3); ctx.lineTo(W / 2 - botHalf, botY + 30); ctx.fill();
+    // 進んでいる感を出すリベットの線
+    ctx.strokeStyle = '#2b2e36'; ctx.lineWidth = 2;
+    const spacing = 2;
+    const off = (s.dist % spacing) / spacing;
+    for (let i = 0; i < 30; i++) {
+      const z = (i + 1 - off) * spacing;
+      const p = 3 / (3 + z);
+      const y = vpY + (botY - vpY) * p;
+      const hw = topHalf + (botHalf - topHalf) * p;
+      ctx.beginPath(); ctx.moveTo(W / 2 - hw, y); ctx.lineTo(W / 2 + hw, y); ctx.stroke();
+    }
+
+    // プレイヤー（背中側）
+    const fx = W / 2, fy = H * .86;
+    let drop = state === 'falling' ? s.fallT * s.fallT * H * .6 : 0;
+    ctx.save();
+    ctx.translate(fx + (state === 'falling' ? Math.sign(s.theta) * s.fallT * 80 : 0), fy + drop);
+    ctx.rotate(s.theta);
+    const bob = input.walking && state === 'play' ? Math.sin(s.walkPhase) * 4 : 0;
+    ctx.strokeStyle = '#111'; ctx.fillStyle = '#111'; ctx.lineWidth = 9; ctx.lineCap = 'round';
+    // 脚
+    ctx.beginPath(); ctx.moveTo(-10, 0 + bob * .5); ctx.lineTo(-4, -60);
+    ctx.moveTo(10, 0 - bob * .5); ctx.lineTo(4, -60); ctx.stroke();
+    // 胴体
+    ctx.fillStyle = '#20232c';
+    ctx.fillRect(-20, -125 + bob * .3, 40, 70);
+    // 腕（バランスを取るように広げる）
+    ctx.strokeStyle = '#20232c'; ctx.lineWidth = 10;
+    const armA = Math.sin(s.t * 3) * .1 - s.omega * .2;
+    ctx.beginPath();
+    ctx.moveTo(-18, -115); ctx.lineTo(-75, -105 + Math.sin(armA) * 40);
+    ctx.moveTo(18, -115); ctx.lineTo(75, -105 - Math.sin(armA) * 40); ctx.stroke();
+    // 頭
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath(); ctx.arc(0, -145, 20, 0, Math.PI * 2); ctx.fill();
+    // ゼッケン
+    ctx.fillStyle = '#ddd'; ctx.fillRect(-12, -112, 24, 20);
+    ctx.fillStyle = '#b00'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('7', 0, -97);
+    ctx.restore();
+
+    ctx.restore(); // roll
+
+    // 電流エフェクト
+    if (s.event && s.event.id === 'shock') {
+      ctx.strokeStyle = `rgba(120,200,255,${.4 + Math.random() * .5})`; ctx.lineWidth = 2;
+      for (let k = 0; k < 3; k++) {
+        ctx.beginPath();
+        let x = W / 2 + (Math.random() - .5) * W * .3, y = H;
+        ctx.moveTo(x, y);
+        for (let j = 0; j < 8; j++) { x += (Math.random() - .5) * 40; y -= H * .07; ctx.lineTo(x, y); }
+        ctx.stroke();
+      }
+      const still = s.ev.still || 0;
+      if (still > .15) {
+        ctx.fillStyle = `rgba(80,160,255,${Math.min(.5, still * .6)})`; ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    // 突風の矢印
+    if (s.event && s.event.id === 'wind') {
+      ctx.strokeStyle = 'rgba(220,230,255,.5)'; ctx.lineWidth = 2;
+      for (let k = 0; k < 14; k++) {
+        const y = (k * 97 + s.evT * 50) % H;
+        const x = ((s.evT * 900 * s.ev.dir + k * 233) % (W + 200) + W + 200) % (W + 200) - 100;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - s.ev.dir * 90, y); ctx.stroke();
+      }
+    }
+
+    // ざわ…ざわ…：暗転＋文字
+    if (s.event && s.event.id === 'zawa') {
+      const t = s.evT, d = s.event.dur;
+      const k = Math.min(1, t / .8, (d - t) / .8);
+      const rg = ctx.createRadialGradient(W / 2, H * .7, 10, W / 2, H * .7, Math.max(W, H) * .6);
+      rg.addColorStop(0, `rgba(0,0,0,${.55 * k})`);
+      rg.addColorStop(.5, `rgba(0,0,0,${.88 * k})`);
+      rg.addColorStop(1, `rgba(0,0,0,${.97 * k})`);
+      ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = 'center';
+      for (const m of s.ev.marks) {
+        ctx.save();
+        ctx.globalAlpha = k * (.6 + .4 * Math.sin(t * 4 + m.ph));
+        ctx.translate(m.x * W + Math.sin(t * 3 + m.ph) * 6, m.y * H);
+        ctx.rotate(m.r);
+        ctx.font = `bold ${m.size}px serif`;
+        ctx.fillStyle = '#e8e8e8';
+        ctx.fillText('ざわ…', 0, 0);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // 悲鳴/雷
+    if (s.event && s.event.id === 'scream' && !s.ev.lightning && s.evT < 2.5) {
+      ctx.save();
+      ctx.translate(W * .5 + (Math.random() - .5) * 10, H * .25);
+      ctx.font = `bold ${Math.min(W * .14, 70)}px serif`; ctx.textAlign = 'center';
+      ctx.fillStyle = '#ff3030'; ctx.fillText('ぎゃあああ', 0, 0);
+      ctx.restore();
+    }
+    if (s.flash > 0) {
+      ctx.fillStyle = `rgba(255,255,255,${Math.max(0, s.flash)})`; ctx.fillRect(0, 0, W, H);
+    }
+
+    // HUD
+    if (state !== 'title') {
+      ctx.textAlign = 'center'; ctx.fillStyle = '#fff';
+      ctx.font = 'bold 34px serif';
+      ctx.fillText(`${s.dist.toFixed(1)}m`, W / 2, 50);
+      // 傾きメーター
+      const mw = Math.min(260, W * .7), mx = W / 2 - mw / 2, my = 66;
+      ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(mx, my, mw, 8);
+      ctx.fillStyle = 'rgba(255,60,60,.6)';
+      ctx.fillRect(mx, my, mw * .12, 8); ctx.fillRect(mx + mw * .88, my, mw * .12, 8);
+      const p = Math.max(-1, Math.min(1, s.theta / .62));
+      ctx.fillStyle = Math.abs(p) > .75 ? '#ff4040' : '#fff';
+      ctx.fillRect(W / 2 + p * mw / 2 - 3, my - 4, 6, 16);
+      if (state === 'play' && !input.walking && s.dist < 3) {
+        ctx.font = '18px serif'; ctx.fillStyle = '#ccc';
+        ctx.fillText('画面を押している間だけ進む', W / 2, H * .5);
+      }
+    }
+    if (s.bannerT > 0 && s.banner) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, s.bannerT * 2);
+      ctx.fillStyle = 'rgba(160,0,0,.85)'; ctx.fillRect(0, H * .3 - 34, W, 56);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+      ctx.font = `bold ${Math.min(32, W * .075)}px serif`;
+      ctx.fillText(s.banner, W / 2, H * .3 + 6);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---------- 画面遷移 ----------
+  const $ = id => document.getElementById(id);
+  function showResult() {
+    state = 'result';
+    const d = s.dist.toFixed(1);
+    $('causeText').textContent = s.cause + '…';
+    $('distText').textContent = d;
+    $('commentText').textContent = `${d}m地点で${s.comment}`;
+    $('result').classList.remove('hidden');
+  }
+  function begin() {
+    audio(); reset();
+    input.walking = false;
+    state = 'play';
+    $('title').classList.add('hidden'); $('result').classList.add('hidden');
+  }
+  $('startBtn').addEventListener('click', async () => { await enableSensor(); begin(); });
+  $('retryBtn').addEventListener('click', begin);
+  $('shareBtn').addEventListener('click', () => {
+    const d = s.dist.toFixed(1);
+    const text = `鉄骨渡りに挑戦…${d}m地点で${s.comment}\n#鉄骨渡り`;
+    const url = location.href.split('#')[0].split('?')[0];
+    window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`, '_blank');
+  });
+
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min(.05, (now - last) / 1000); last = now;
+    update(dt); draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

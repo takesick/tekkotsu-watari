@@ -74,6 +74,8 @@
     firstEvent: 15,     // 最初のイベント地点（m）
     eventGap: [20, 32], // イベントの間隔（m）
     scareHold: 5,       // 雷・悲鳴で心拍が張り付く時間（秒）
+    restSens: 0.8,      // 止まっている間の重心感度の倍率（小さいほど安定）
+    restDamp: 2.0,      // 止まっている間の揺れの収まりやすさ（歩行中は1.4）
   };
 
   // ---------- 入力 ----------
@@ -236,13 +238,14 @@
       s.heartPhase += dt * (60 + s.heart * 120) / 60 * Math.PI * 2;
 
       // 重心感度：心拍数で増え、距離でも少しずつ難しくなる
-      const sens = (TUNE.sensBase + s.heart) * (1 + s.dist / 300);
+      const sens = (TUNE.sensBase + s.heart) * (1 + s.dist / 300) * (input.walking ? 1 : TUNE.restSens);
 
       // ふらつき（歩いていると大きい）
       const amp = (input.walking ? 2.4 : 1.0) * sens;
       s.noise += ((Math.random() - .5) * amp * 6 - s.noise * 1.5) * dt;
 
-      const acc = 3.0 * sens * Math.sin(s.theta) + s.noise + s.force + 4.0 * u - 1.4 * s.omega;
+      const damp = input.walking ? 1.4 : TUNE.restDamp;
+      const acc = 3.0 * sens * Math.sin(s.theta) + s.noise + s.force + 4.0 * u - damp * s.omega;
       s.omega += acc * dt;
       s.theta += s.omega * dt;
 

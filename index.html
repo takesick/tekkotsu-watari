@@ -180,6 +180,51 @@
     },
   ];
 
+  // ---------- 主人公の見た目（毎回ランダム） ----------
+  const SKIN = '#d9ad86';
+  const LOOKS = [
+    { // ツンツンの長髪、黒っぽい上着
+      body: '#2a2f3a', bodyW: 40, skin: SKIN,
+      head(c) {
+        c.fillStyle = '#2b2119';
+        c.beginPath();
+        const n = 15;
+        for (let i = 0; i <= n; i++) {
+          const a = Math.PI * .7 + i / n * Math.PI * 1.6;
+          const r = i % 2 ? 22 : 33 + (i % 3) * 3;
+          c.lineTo(Math.cos(a) * r, -145 + Math.sin(a) * r);
+        }
+        c.lineTo(10, -118); c.lineTo(4, -124); c.lineTo(0, -114); c.lineTo(-4, -124); c.lineTo(-10, -118);
+        c.closePath(); c.fill();
+      },
+    },
+    { // 明るい茶髪の若者、白っぽいジャケット
+      body: '#cfc9b8', bodyW: 36, skin: SKIN,
+      head(c) {
+        c.fillStyle = '#b8864a';
+        c.beginPath(); c.arc(0, -146, 20, 0, Math.PI * 2); c.fill();
+        c.beginPath(); c.moveTo(-16, -158); c.quadraticCurveTo(4, -178, 28, -164);
+        c.quadraticCurveTo(10, -166, 6, -156); c.fill();
+        c.fillStyle = SKIN; c.fillRect(-17, -137, 5, 7); c.fillRect(12, -137, 5, 7);
+      },
+    },
+    { // 薄毛の中年、グレーのスーツでがっしり
+      body: '#5d6169', bodyW: 48, skin: SKIN,
+      head(c) {
+        c.fillStyle = SKIN;
+        c.beginPath(); c.arc(0, -145, 21, 0, Math.PI * 2); c.fill();
+        // 後頭部の下半分だけ髪が残っている
+        c.fillStyle = '#3d3a36';
+        c.beginPath(); c.arc(0, -145, 21.5, -Math.PI * .04, Math.PI * 1.04); c.closePath(); c.fill();
+        c.fillStyle = SKIN;
+        c.beginPath(); c.arc(-21, -145, 5, 0, Math.PI * 2); c.arc(21, -145, 5, 0, Math.PI * 2); c.fill();
+        c.fillStyle = 'rgba(255,255,255,.35)';
+        c.beginPath(); c.ellipse(-6, -157, 7, 3, -.4, 0, Math.PI * 2); c.fill();
+      },
+    },
+  ];
+  const BIBS = ['7', '13', '25', '41', '58', '66', '84', '99'];
+
   // ---------- 状態 ----------
   let s = null;
   let state = 'title';
@@ -189,6 +234,7 @@
       still: 0, walked: false, heartPhase: 0,
       nextEvent: TUNE.firstEvent, event: null, ev: {}, evT: 0, banner: null, bannerT: 0,
       walkPhase: 0, fallT: 0, cause: '', comment: '', flash: 0, lastEvent: null,
+      look: { ...LOOKS[Math.floor(Math.random() * LOOKS.length)], num: BIBS[Math.floor(Math.random() * BIBS.length)] },
     };
   }
   reset();
@@ -445,18 +491,22 @@
       ctx.fillStyle = '#0a0a0a';
       ctx.beginPath(); ctx.ellipse(0, f.y, 6, 4 + (f.y + 14) * .12, 0, 0, Math.PI * 2); ctx.fill();
     }
-    ctx.fillStyle = '#20232c';
-    ctx.fillRect(-20, -125 + bob * .3, 40, 70);
-    ctx.strokeStyle = '#20232c'; ctx.lineWidth = 10;
+    const L = s.look, bw = L.bodyW / 2, top = -125 + bob * .3;
+    // 胴体と腕
+    ctx.strokeStyle = L.body; ctx.lineWidth = 10;
     const armA = Math.sin(s.t * 3) * .1 - s.omega * .2;
     ctx.beginPath();
-    ctx.moveTo(-18, -115); ctx.lineTo(-75, -105 + Math.sin(armA) * 40);
-    ctx.moveTo(18, -115); ctx.lineTo(75, -105 - Math.sin(armA) * 40); ctx.stroke();
-    ctx.fillStyle = '#1a1a1a';
-    ctx.beginPath(); ctx.arc(0, -145, 20, 0, Math.PI * 2); ctx.fill();
+    ctx.moveTo(-bw + 2, -115); ctx.lineTo(-75, -105 + Math.sin(armA) * 40);
+    ctx.moveTo(bw - 2, -115); ctx.lineTo(75, -105 - Math.sin(armA) * 40); ctx.stroke();
+    ctx.fillStyle = L.body;
+    ctx.beginPath(); ctx.roundRect(-bw, top, bw * 2, 70, [10, 10, 2, 2]); ctx.fill();
+    // 首
+    ctx.fillStyle = L.skin; ctx.fillRect(-6, -132, 12, 10);
+    L.head(ctx);
+    // ゼッケン
     ctx.fillStyle = '#ddd'; ctx.fillRect(-12, -112, 24, 20);
-    ctx.fillStyle = '#b00'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('7', 0, -97);
+    ctx.fillStyle = '#b00'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(L.num, 0, -97);
     ctx.restore();
   }
 

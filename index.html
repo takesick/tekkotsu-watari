@@ -406,7 +406,7 @@
 
     // 鉄骨（I形鋼：下フランジ → 上面）
     const zNear = 1.0;
-    const bw = .15;
+    const bw = .045;
     ctx.fillStyle = '#24272f';
     let a = P(-bw, -.45, zNear), b = P(bw, -.45, zNear), c = P(bw, -.45, FAR), d = P(-bw, -.45, FAR);
     ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.lineTo(...c); ctx.lineTo(...d); ctx.fill();
@@ -430,10 +430,21 @@
     ctx.save();
     ctx.translate(fx + (drop ? Math.sign(s.theta) * s.fallT * 80 : 0), fy + drop);
     ctx.rotate(s.theta);
-    const bob = input.walking && state === 'play' ? Math.sin(s.walkPhase) * 4 : 0;
-    ctx.strokeStyle = '#111'; ctx.lineWidth = 9; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(-10, 0 + bob * .5); ctx.lineTo(-4, -60);
-    ctx.moveTo(10, 0 - bob * .5); ctx.lineTo(4, -60); ctx.stroke();
+    const moving = input.walking && state === 'play';
+    const bob = moving ? Math.sin(s.walkPhase * 1.4) * 1.5 : 0;
+    // 足を縦一列に並べたすり足：両足とも鉄骨の中心線上にあり、交互に前へ滑らせる
+    const ph = s.walkPhase * .7;
+    const feet = [
+      { hip: -8, knee: -11, y: -7 - 7 * Math.sin(ph) },
+      { hip: 8, knee: 11, y: -7 + 7 * Math.sin(ph) },
+    ].sort((a, b) => a.y - b.y); // 前の足（画面で上）から描く
+    ctx.lineCap = 'round';
+    for (const f of feet) {
+      ctx.strokeStyle = '#111'; ctx.lineWidth = 8;
+      ctx.beginPath(); ctx.moveTo(f.hip * .5, -60); ctx.lineTo(f.knee, -30 + f.y * .4); ctx.lineTo(0, f.y - 4); ctx.stroke();
+      ctx.fillStyle = '#0a0a0a';
+      ctx.beginPath(); ctx.ellipse(0, f.y, 6, 4 + (f.y + 14) * .12, 0, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.fillStyle = '#20232c';
     ctx.fillRect(-20, -125 + bob * .3, 40, 70);
     ctx.strokeStyle = '#20232c'; ctx.lineWidth = 10;

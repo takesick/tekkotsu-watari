@@ -6,7 +6,7 @@
 <title>鉄骨渡り</title>
 <meta name="description" content="スマホを傾けて高層ビルの間の鉄骨を渡る理不尽ゲーム">
 <meta property="og:title" content="鉄骨渡り">
-<meta property="og:description" content="スマホを傾けて鉄骨を渡れ。突風、ざわ…ざわ…、雷、電流。あなたは何m進める？">
+<meta property="og:description" content="スマホを傾けて鉄骨を渡れ。突風、ざわ…ざわ…、雷、そして止まれば電流。あなたは何m進める？">
 <style>
   html, body { margin: 0; height: 100%; background: #05060a; overflow: hidden;
     font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif; color: #f2f2f2;
@@ -35,6 +35,8 @@
   <p>地上74m。幅わずか30cmの鉄骨を渡れ。<br>
     <b>スマホを左右に傾けて</b>バランスを取り、<br>
     <b>画面を押している間</b>だけ前へ進む。</p>
+  <p>歩くほど<b>心拍数</b>が上がり、体がふらつく。<br>
+    だが<b>3秒止まると鉄骨に電流</b>が流れる。</p>
   <p class="small">PCの場合は ←→ / A D で傾き、スペースかクリック長押しで前進</p>
   <button id="startBtn">渡る</button>
 </div>
@@ -60,6 +62,19 @@
   }
   window.addEventListener('resize', resize);
   resize();
+
+  // ---------- 調整用パラメータ ----------
+  const TUNE = {
+    heartWalk: 0.045,   // 歩いている間の心拍上昇（/秒）
+    heartLean: 0.10,    // 傾きが大きいときの追加上昇（/秒、限界傾きで最大）
+    heartRest: 0.16,    // 止まっている間の心拍低下（/秒）
+    sensBase: 0.6,      // 重心感度 = sensBase + 心拍数（心拍0.4で従来の難しさ）
+    shockWarn: 1.2,     // 止まってから警告が出るまで（秒）
+    shockKill: 3.0,     // 止まってから感電するまで（秒）
+    firstEvent: 15,     // 最初のイベント地点（m）
+    eventGap: [20, 32], // イベントの間隔（m）
+    scareHold: 5,       // 雷・悲鳴で心拍が張り付く時間（秒）
+  };
 
   // ---------- 入力 ----------
   const input = { tilt: 0, key: 0, walking: false, hasSensor: false };
@@ -123,7 +138,7 @@
   function vibrate(p) { if (navigator.vibrate) navigator.vibrate(p); }
 
   // ---------- 理不尽イベント ----------
-  // 各イベントは start(s) で初期化し、update(s, dt) で毎フレーム力などを加える
+  // 各イベントは start(s) で初期化し、update(s, dt, t) で毎フレーム力などを加える
   const EVENTS = [
     {
       id: 'wind', name: '突風', dur: 3.2,
@@ -147,20 +162,18 @@
       update() {},
     },
     {
-      id: 'scream', name: '悲鳴', dur: 4,
-      start(s) { s.ev.lightning = Math.random() < .5;
-        if (s.ev.lightning) { noise(1.6, 3000, .9); vibrate([80, 40, 300]);
-          s.omega += (Math.random() < .5 ? -1 : 1) * 1.1; }
-        else { tone(1.4, 1300, 500, .2); vibrate(400); }
+      // 悲鳴か雷のどちらかで、心拍数が一定時間 0.9〜1 に張り付く
+      id: 'scream', name: '悲鳴', dur: TUNE.scareHold,
+      start(s) {
+        s.ev.lightning = Math.random() < .5;
+        s.ev.hold = 0.9 + Math.random() * 0.1;
+        if (s.ev.lightning) {
+          noise(1.6, 3000, .9); vibrate([80, 40, 300]);
+          s.omega += (Math.random() < .5 ? -1 : 1) * 1.1;
+        } else { tone(1.4, 1300, 500, .2); vibrate(400); }
       },
-      update(s) { s.sens = 2.2; },
-    },
-    {
-      id: 'shock', name: '電流', dur: 7,
-      start(s) { s.ev.still = 0; tone(.5, 120, 120, .12, 'square'); vibrate([50, 50, 50]); },
-      update(s, dt) {
-        s.ev.still = input.walking ? 0 : s.ev.still + dt;
-        if (s.ev.still > .9) die('感電', '電流が流れる鉄骨で立ち止まった');
+      update(s, dt, t) {
+        s.heart = Math.min(1, s.ev.hold + Math.sin(t * 7) * .03);
       },
     },
   ];
@@ -170,21 +183,21 @@
   let state = 'title';
   function reset() {
     s = {
-      theta: 0, omega: 0, dist: 0, t: 0, noise: 0, force: 0, sens: 1,
-      nextEvent: 25, event: null, ev: {}, evT: 0, banner: null, bannerT: 0,
+      theta: 0, omega: 0, dist: 0, t: 0, noise: 0, force: 0, heart: 0,
+      still: 0, walked: false, heartPhase: 0,
+      nextEvent: TUNE.firstEvent, event: null, ev: {}, evT: 0, banner: null, bannerT: 0,
       walkPhase: 0, fallT: 0, cause: '', comment: '', flash: 0, lastEvent: null,
     };
   }
   reset();
 
   function startEvent() {
-    let pool = EVENTS.filter(e => e !== s.lastEvent);
+    const pool = EVENTS.filter(e => e !== s.lastEvent);
     const e = pool[Math.floor(Math.random() * pool.length)];
     s.event = e; s.lastEvent = e; s.ev = {}; s.evT = 0;
     e.start(s);
     let label = e.name;
     if (e.id === 'scream') label = s.ev.lightning ? '雷' : '前の挑戦者の悲鳴';
-    if (e.id === 'shock') label = '電流 ON ── 止まるな';
     if (e.id === 'scream' && s.ev.lightning) s.flash = 1;
     s.banner = label; s.bannerT = 2.2;
   }
@@ -204,21 +217,32 @@
       input.key += (kTarget - input.key) * Math.min(1, dt * 6);
       const u = input.hasSensor ? input.tilt : input.key;
 
-      // 距離で難易度アップ
-      const diff = 1 + s.dist / 150;
-      s.force = 0; s.sens = 1;
+      // 心拍数：歩くと上がり、止まると下がる。大きく傾いていると焦って上がる
+      const lean = Math.min(1, Math.abs(s.theta) / .62);
+      s.heart += ((input.walking ? TUNE.heartWalk : -TUNE.heartRest) + TUNE.heartLean * lean * lean) * dt;
+      s.heart = Math.max(0, Math.min(1, s.heart));
+
+      // 電流：歩き出した後は、止まり続けると感電する
+      if (input.walking) { s.walked = true; s.still = 0; }
+      else if (s.walked) s.still += dt;
+      if (s.still > TUNE.shockKill) { die('感電', '鉄骨の上で立ち止まり感電した'); return; }
+
+      s.force = 0;
       if (s.event) {
         s.evT += dt;
         s.event.update(s, dt, s.evT);
         if (s.evT >= s.event.dur) s.event = null;
       }
-      if (state !== 'play') return;
+      s.heartPhase += dt * (60 + s.heart * 120) / 60 * Math.PI * 2;
+
+      // 重心感度：心拍数で増え、距離でも少しずつ難しくなる
+      const sens = (TUNE.sensBase + s.heart) * (1 + s.dist / 300);
 
       // ふらつき（歩いていると大きい）
-      const amp = (input.walking ? 2.4 : 1.0) * diff;
+      const amp = (input.walking ? 2.4 : 1.0) * sens;
       s.noise += ((Math.random() - .5) * amp * 6 - s.noise * 1.5) * dt;
 
-      const acc = 3.0 * diff * Math.sin(s.theta) + s.noise + s.force + 4.0 * s.sens * u - 1.4 * s.omega;
+      const acc = 3.0 * sens * Math.sin(s.theta) + s.noise + s.force + 4.0 * u - 1.4 * s.omega;
       s.omega += acc * dt;
       s.theta += s.omega * dt;
 
@@ -228,18 +252,21 @@
       }
       if (s.dist >= s.nextEvent && !s.event) {
         startEvent();
-        s.nextEvent += 35 + Math.random() * 20;
+        s.nextEvent += TUNE.eventGap[0] + Math.random() * (TUNE.eventGap[1] - TUNE.eventGap[0]);
       }
       if (Math.abs(s.theta) > 0.62) {
-        const why = s.event && s.event.id === 'wind' ? ['転落', '突風に煽られて落ちた']
-          : s.event && s.event.id === 'zawa' ? ['転落', 'ざわ…ざわ…で足元を見失った']
-          : s.event && s.event.id === 'scream' ? ['転落', s.ev.lightning ? '雷に驚いて足を踏み外した' : '悲鳴につられて落ちた']
-          : ['転落', 'バランスを崩して落ちた'];
-        die(why[0], why[1]);
+        const id = s.event && s.event.id;
+        const why = id === 'wind' ? '突風に煽られて落ちた'
+          : id === 'zawa' ? 'ざわ…ざわ…で足元を見失った'
+          : id === 'scream' ? (s.ev.lightning ? '雷に驚いて足を踏み外した' : '悲鳴につられて落ちた')
+          : s.heart > .8 ? '心臓が限界を迎えて落ちた'
+          : 'バランスを崩して落ちた';
+        die('転落', why);
       }
     } else if (state === 'falling') {
       s.fallT += dt;
-      s.omega += Math.sign(s.theta || 1) * 6 * dt;
+      if (s.cause === '感電') { s.omega += Math.sign(s.theta || 1) * 3 * dt; }
+      else s.omega += Math.sign(s.theta || 1) * 6 * dt;
       s.theta += s.omega * dt;
       if (s.fallT > 1.4) showResult();
     }
@@ -247,107 +274,227 @@
     if (s.flash > 0) s.flash -= dt * 1.8;
   }
 
-  // ---------- 描画 ----------
-  const stars = Array.from({ length: 80 }, () => ({ x: Math.random(), y: Math.random() * .45, r: Math.random() * 1.4 }));
-  const lights = Array.from({ length: 140 }, () => ({ x: Math.random(), y: .55 + Math.random() * .45, c: Math.random() }));
+  // ---------- 世界（透視投影） ----------
+  // 鉄骨の上面が y=0、地面が y=-74、カメラは鉄骨の上 1.6m。z は前方への距離(m)
+  const GROUND = -74, CAM_Y = 1.6, FAR = 320;
+  let F = 1, VPY = 0;
+  function P(x, y, z) { return [W / 2 + x * F / z, VPY + (CAM_Y - y) * F / z]; }
 
-  function draw() {
-    ctx.save();
-    ctx.fillStyle = '#05060a'; ctx.fillRect(0, 0, W, H);
+  // 疑似乱数（建物の形を毎回同じにする）
+  function rnd(seed) { const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
 
-    // 画面全体をプレイヤーの傾きに合わせて少し揺らす
-    const roll = -s.theta * .35;
-    ctx.translate(W / 2, H * .8); ctx.rotate(roll); ctx.translate(-W / 2, -H * .8);
+  // 周りのビル群：z方向に並べ、進むと後ろへ流れていく
+  const towers = [];
+  for (let i = 0; i < 40; i++) {
+    const side = i % 2 ? 1 : -1;
+    const near = 28 + rnd(i) * 70;
+    towers.push({
+      zw: Math.floor(i / 2) * 26 + rnd(i + 50) * 14 - 20,
+      x0: side * near, x1: side * (near + 14 + rnd(i + 9) * 22),
+      top: -10 + rnd(i + 3) * 60, depth: 14 + rnd(i + 7) * 18, seed: i,
+    });
+  }
+  const LOOP = 20 * 26;
 
-    const vpY = H * .38;
-    // 夜空と街明かり
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#080a18'); g.addColorStop(.45, '#121633'); g.addColorStop(1, '#040408');
-    ctx.fillStyle = g; ctx.fillRect(-W, -H, W * 3, H * 3);
+  function fog(z) { return Math.min(.85, z / FAR); }
+
+  function drawTower(t, dist) {
+    let z0 = ((t.zw - dist) % LOOP + LOOP) % LOOP - 20;
+    let z1 = z0 + t.depth;
+    if (z1 < 1) return;
+    const zn = Math.max(1, z0);
+    const inner = Math.abs(t.x0) < Math.abs(t.x1) ? t.x0 : t.x1;
+    const f = fog(zn);
+    const base = `rgb(${18 + f * 14},${20 + f * 16},${32 + f * 20})`;
+    // 鉄骨側の側面
+    const a = P(inner, t.top, zn), b = P(inner, t.top, z1), c = P(inner, GROUND, z1), d = P(inner, GROUND, zn);
+    ctx.fillStyle = `rgb(${12 + f * 14},${13 + f * 16},${22 + f * 20})`;
+    ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.lineTo(...c); ctx.lineTo(...d); ctx.fill();
+    // 側面の窓
+    const rows = Math.floor((t.top - GROUND) / 4), cols = Math.floor(t.depth / 4);
+    for (let r = 1; r < rows; r++) for (let k = 0; k < cols; k++) {
+      if (rnd(t.seed * 997 + r * 31 + k) > .32) continue;
+      const zz = z0 + (k + .5) * 4; if (zz < 1.2) continue;
+      const p = P(inner, GROUND + r * 4, zz);
+      const sz = Math.max(1, 1.6 * F / zz);
+      ctx.fillStyle = rnd(t.seed + r * 7 + k) > .2 ? `rgba(255,214,140,${.75 - f * .5})` : `rgba(160,200,255,${.6 - f * .4})`;
+      ctx.fillRect(p[0] - sz / 2, p[1] - sz, sz, sz * 1.3);
+    }
+    // 正面
+    if (z0 >= 1) {
+      const p0 = P(t.x0, t.top, z0), p1 = P(t.x1, GROUND, z0);
+      ctx.fillStyle = base;
+      ctx.fillRect(Math.min(p0[0], p1[0]), p0[1], Math.abs(p1[0] - p0[0]), p1[1] - p0[1]);
+      const wc = Math.floor(Math.abs(t.x1 - t.x0) / 4);
+      for (let r = 1; r < rows; r++) for (let k = 0; k < wc; k++) {
+        if (rnd(t.seed * 131 + r * 17 + k) > .3) continue;
+        const x = Math.min(t.x0, t.x1) + (k + .5) * 4;
+        const p = P(x, GROUND + r * 4, z0);
+        const sz = Math.max(1, 1.6 * F / z0);
+        ctx.fillStyle = `rgba(255,214,140,${.75 - f * .5})`;
+        ctx.fillRect(p[0] - sz / 2, p[1] - sz, sz, sz * 1.3);
+      }
+      // 屋上の赤い航空障害灯
+      if (Math.sin(s.t * 3 + t.seed) > .3) {
+        const q = P((t.x0 + t.x1) / 2, t.top + 1, z0);
+        ctx.fillStyle = '#ff2020'; ctx.fillRect(q[0] - 1.5, q[1] - 1.5, 3, 3);
+      }
+    }
+  }
+
+  const stars = Array.from({ length: 70 }, () => ({ x: Math.random(), y: Math.random(), r: Math.random() * 1.4 }));
+  const cars = Array.from({ length: 24 }, (_, i) => ({ x: [-4, -1.5, 1.5, 4][i % 4], z: Math.random() * FAR, v: (i % 4 < 2 ? 1 : -1) * (8 + Math.random() * 6) }));
+
+  function drawWorld() {
+    F = H * .62; VPY = H * .24;
+    const dist = s.dist;
+    // 空
+    let g = ctx.createLinearGradient(0, 0, 0, VPY);
+    g.addColorStop(0, '#05060f'); g.addColorStop(1, '#1d2245');
+    ctx.fillStyle = g; ctx.fillRect(-W, -H, W * 3, VPY + H);
     ctx.fillStyle = '#fff';
-    for (const st of stars) { ctx.globalAlpha = .6; ctx.fillRect(st.x * W, st.y * H, st.r, st.r); }
-    for (const l of lights) {
-      ctx.globalAlpha = .5 + .3 * Math.sin(s.t * 2 + l.c * 20);
-      ctx.fillStyle = l.c < .7 ? '#ffd27a' : '#ff4040';
-      ctx.fillRect(l.x * W, l.y * H, 2, 2);
-    }
+    for (const st of stars) { ctx.globalAlpha = .5; ctx.fillRect(st.x * W * 1.6 - W * .3, st.y * VPY, st.r, st.r); }
     ctx.globalAlpha = 1;
-    // 向こう側のビル
-    ctx.fillStyle = '#1b1e2c';
-    ctx.fillRect(W / 2 - W * .09, vpY - H * .1, W * .18, H * .35);
-    ctx.fillStyle = '#ffdd88';
-    ctx.fillRect(W / 2 - 6, vpY - 10, 12, 10);
-
-    // 鉄骨（透視図）
-    const botY = H + 20, botHalf = Math.max(70, W * .16), topHalf = 3;
-    ctx.fillStyle = '#5a5f6c';
-    ctx.beginPath();
-    ctx.moveTo(W / 2 - topHalf, vpY); ctx.lineTo(W / 2 + topHalf, vpY);
-    ctx.lineTo(W / 2 + botHalf, botY); ctx.lineTo(W / 2 - botHalf, botY); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#3a3e48';
-    ctx.beginPath();
-    ctx.moveTo(W / 2 - botHalf, botY); ctx.lineTo(W / 2 - topHalf, vpY);
-    ctx.lineTo(W / 2 - topHalf, vpY + 3); ctx.lineTo(W / 2 - botHalf, botY + 30); ctx.fill();
-    // 進んでいる感を出すリベットの線
-    ctx.strokeStyle = '#2b2e36'; ctx.lineWidth = 2;
-    const spacing = 2;
-    const off = (s.dist % spacing) / spacing;
-    for (let i = 0; i < 30; i++) {
-      const z = (i + 1 - off) * spacing;
-      const p = 3 / (3 + z);
-      const y = vpY + (botY - vpY) * p;
-      const hw = topHalf + (botHalf - topHalf) * p;
-      ctx.beginPath(); ctx.moveTo(W / 2 - hw, y); ctx.lineTo(W / 2 + hw, y); ctx.stroke();
+    // 地上（はるか下）
+    g = ctx.createLinearGradient(0, VPY, 0, H);
+    g.addColorStop(0, '#1a1c2e'); g.addColorStop(.25, '#0c0d16'); g.addColorStop(1, '#030305');
+    ctx.fillStyle = g; ctx.fillRect(-W, VPY, W * 3, H * 2);
+    // 道路（鉄骨の真下を走る道と、交差する道）
+    ctx.strokeStyle = 'rgba(255,190,90,.22)'; ctx.lineWidth = 1;
+    for (const rx of [-6, 6, -40, 40, -90, 90]) {
+      const a = P(rx, GROUND, 40), b = P(rx, GROUND, FAR);
+      ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.stroke();
+    }
+    for (let zw = Math.ceil(dist / 50) * 50; zw < dist + FAR; zw += 50) {
+      const z = zw - dist; if (z < 40) continue;
+      const a = P(-200, GROUND, z), b = P(200, GROUND, z);
+      ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.stroke();
+    }
+    // 街灯
+    ctx.fillStyle = 'rgba(255,200,110,.7)';
+    for (let zw = Math.ceil(dist / 12) * 12; zw < dist + FAR; zw += 12) {
+      const z = zw - dist; if (z < 40) continue;
+      for (const rx of [-7, 7]) { const p = P(rx, GROUND, z); ctx.fillRect(p[0], p[1], 1.5, 1.5); }
+    }
+    // 車のライト
+    for (const c of cars) {
+      c.z = ((c.z + c.v * (1 / 60) - 40) % (FAR - 40) + (FAR - 40)) % (FAR - 40) + 40;
+      const p = P(c.x, GROUND, c.z);
+      ctx.fillStyle = c.v > 0 ? '#ff5050' : '#fff6d0';
+      ctx.fillRect(p[0] - 1, p[1] - 1, 2.5, 2);
     }
 
-    // プレイヤー（背中側）
+    // 向こう側のゴールのビル
+    const gl = P(-28, 60, FAR), gr = P(28, GROUND, FAR);
+    ctx.fillStyle = '#20243a'; ctx.fillRect(gl[0], gl[1], gr[0] - gl[0], gr[1] - gl[1]);
+    for (let r = 0; r < 30; r++) for (let k = 0; k < 14; k++) {
+      if (rnd(r * 14 + k + 500) > .35) continue;
+      const p = P(-26 + k * 4, GROUND + 6 + r * 4.4, FAR);
+      ctx.fillStyle = 'rgba(255,214,140,.5)'; ctx.fillRect(p[0], p[1], 1.5, 1.5);
+    }
+    const d0 = P(-1, 2.4, FAR), d1 = P(1, 0, FAR);
+    ctx.fillStyle = '#ffe9a8'; ctx.shadowColor = '#ffd36b'; ctx.shadowBlur = 12;
+    ctx.fillRect(d0[0], d0[1], d1[0] - d0[0], d1[1] - d0[1]);
+    ctx.shadowBlur = 0;
+
+    // ビル群（遠い順）
+    const order = towers.map(t => [t, ((t.zw - dist) % LOOP + LOOP) % LOOP - 20]).sort((a, b) => b[1] - a[1]);
+    for (const [t] of order) drawTower(t, dist);
+
+    // 鉄骨（I形鋼：下フランジ → 上面）
+    const zNear = 1.0;
+    const bw = .15;
+    ctx.fillStyle = '#24272f';
+    let a = P(-bw, -.45, zNear), b = P(bw, -.45, zNear), c = P(bw, -.45, FAR), d = P(-bw, -.45, FAR);
+    ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.lineTo(...c); ctx.lineTo(...d); ctx.fill();
+    g = ctx.createLinearGradient(0, VPY, 0, H);
+    g.addColorStop(0, '#3a3f4b'); g.addColorStop(1, '#6b717f');
+    ctx.fillStyle = g;
+    a = P(-bw, 0, zNear); b = P(bw, 0, zNear); c = P(bw, 0, FAR); d = P(-bw, 0, FAR);
+    ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.lineTo(...c); ctx.lineTo(...d); ctx.fill();
+    // リベットの線（進んでいる感）
+    ctx.strokeStyle = 'rgba(20,22,28,.8)'; ctx.lineWidth = 1.5;
+    for (let zw = Math.ceil((dist + zNear) / 1.5) * 1.5; zw < dist + 60; zw += 1.5) {
+      const z = zw - dist;
+      const l = P(-bw, 0, z), r = P(bw, 0, z);
+      ctx.beginPath(); ctx.moveTo(...l); ctx.lineTo(...r); ctx.stroke();
+    }
+  }
+
+  function drawPlayer() {
     const fx = W / 2, fy = H * .86;
-    let drop = state === 'falling' ? s.fallT * s.fallT * H * .6 : 0;
+    const drop = state === 'falling' && s.cause !== '感電' ? s.fallT * s.fallT * H * .6 : 0;
     ctx.save();
-    ctx.translate(fx + (state === 'falling' ? Math.sign(s.theta) * s.fallT * 80 : 0), fy + drop);
+    ctx.translate(fx + (drop ? Math.sign(s.theta) * s.fallT * 80 : 0), fy + drop);
     ctx.rotate(s.theta);
     const bob = input.walking && state === 'play' ? Math.sin(s.walkPhase) * 4 : 0;
-    ctx.strokeStyle = '#111'; ctx.fillStyle = '#111'; ctx.lineWidth = 9; ctx.lineCap = 'round';
-    // 脚
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 9; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(-10, 0 + bob * .5); ctx.lineTo(-4, -60);
     ctx.moveTo(10, 0 - bob * .5); ctx.lineTo(4, -60); ctx.stroke();
-    // 胴体
     ctx.fillStyle = '#20232c';
     ctx.fillRect(-20, -125 + bob * .3, 40, 70);
-    // 腕（バランスを取るように広げる）
     ctx.strokeStyle = '#20232c'; ctx.lineWidth = 10;
     const armA = Math.sin(s.t * 3) * .1 - s.omega * .2;
     ctx.beginPath();
     ctx.moveTo(-18, -115); ctx.lineTo(-75, -105 + Math.sin(armA) * 40);
     ctx.moveTo(18, -115); ctx.lineTo(75, -105 - Math.sin(armA) * 40); ctx.stroke();
-    // 頭
     ctx.fillStyle = '#1a1a1a';
     ctx.beginPath(); ctx.arc(0, -145, 20, 0, Math.PI * 2); ctx.fill();
-    // ゼッケン
     ctx.fillStyle = '#ddd'; ctx.fillRect(-12, -112, 24, 20);
     ctx.fillStyle = '#b00'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText('7', 0, -97);
     ctx.restore();
+  }
 
-    ctx.restore(); // roll
+  function sparks(n, alpha) {
+    ctx.strokeStyle = `rgba(120,200,255,${alpha})`; ctx.lineWidth = 2;
+    for (let k = 0; k < n; k++) {
+      ctx.beginPath();
+      let x = W / 2 + (Math.random() - .5) * W * .5, y = H;
+      ctx.moveTo(x, y);
+      for (let j = 0; j < 8; j++) { x += (Math.random() - .5) * 40; y -= H * .07; ctx.lineTo(x, y); }
+      ctx.stroke();
+    }
+  }
 
-    // 電流エフェクト
-    if (s.event && s.event.id === 'shock') {
-      ctx.strokeStyle = `rgba(120,200,255,${.4 + Math.random() * .5})`; ctx.lineWidth = 2;
-      for (let k = 0; k < 3; k++) {
-        ctx.beginPath();
-        let x = W / 2 + (Math.random() - .5) * W * .3, y = H;
-        ctx.moveTo(x, y);
-        for (let j = 0; j < 8; j++) { x += (Math.random() - .5) * 40; y -= H * .07; ctx.lineTo(x, y); }
-        ctx.stroke();
-      }
-      const still = s.ev.still || 0;
-      if (still > .15) {
-        ctx.fillStyle = `rgba(80,160,255,${Math.min(.5, still * .6)})`; ctx.fillRect(0, 0, W, H);
-      }
+  function draw() {
+    ctx.save();
+    ctx.fillStyle = '#05060a'; ctx.fillRect(0, 0, W, H);
+
+    // 画面全体をプレイヤーの傾きに合わせて少し揺らす（心拍が高いと視界も脈打つ）
+    const pulse = s.heart > .6 ? Math.max(0, Math.sin(s.heartPhase)) * (s.heart - .6) * .03 : 0;
+    ctx.save();
+    ctx.translate(W / 2, H * .8); ctx.rotate(-s.theta * .35); ctx.scale(1 + pulse, 1 + pulse);
+    ctx.translate(-W / 2, -H * .8);
+    drawWorld();
+    drawPlayer();
+    ctx.restore();
+
+    // 心拍が高いと視界の端が赤くなる
+    if (s.heart > .5) {
+      const k = (s.heart - .5) * 2 * (.7 + .3 * Math.sin(s.heartPhase));
+      const rg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .35, W / 2, H / 2, Math.max(W, H) * .7);
+      rg.addColorStop(0, 'rgba(120,0,0,0)'); rg.addColorStop(1, `rgba(150,0,0,${.55 * k})`);
+      ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
     }
 
-    // 突風の矢印
+    // 電流：止まっている時間に応じて強くなる
+    if (state === 'play' && s.still > TUNE.shockWarn * .5) {
+      const k = Math.min(1, (s.still - TUNE.shockWarn * .5) / (TUNE.shockKill - TUNE.shockWarn * .5));
+      sparks(1 + Math.floor(k * 5), .3 + k * .6);
+      ctx.fillStyle = `rgba(80,160,255,${k * .35})`; ctx.fillRect(0, 0, W, H);
+      if (s.still > TUNE.shockWarn) {
+        ctx.textAlign = 'center'; ctx.fillStyle = '#bfe3ff';
+        ctx.font = `bold ${Math.min(30, W * .075)}px serif`;
+        ctx.fillText(`⚡ 通電まで ${Math.max(0, TUNE.shockKill - s.still).toFixed(1)} ⚡`, W / 2, H * .45);
+      }
+    }
+    if (state === 'falling' && s.cause === '感電') {
+      sparks(8, .9);
+      ctx.fillStyle = `rgba(200,230,255,${Math.random() * .5})`; ctx.fillRect(0, 0, W, H);
+    }
+
+    // 突風の線
     if (s.event && s.event.id === 'wind') {
       ctx.strokeStyle = 'rgba(220,230,255,.5)'; ctx.lineWidth = 2;
       for (let k = 0; k < 14; k++) {
@@ -397,6 +544,8 @@
       ctx.textAlign = 'center'; ctx.fillStyle = '#fff';
       ctx.font = 'bold 34px serif';
       ctx.fillText(`${s.dist.toFixed(1)}m`, W / 2, 50);
+      ctx.font = '12px serif'; ctx.fillStyle = '#aaa';
+      ctx.fillText('地上 74m', W / 2, 18);
       // 傾きメーター
       const mw = Math.min(260, W * .7), mx = W / 2 - mw / 2, my = 66;
       ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(mx, my, mw, 8);
@@ -405,8 +554,19 @@
       const p = Math.max(-1, Math.min(1, s.theta / .62));
       ctx.fillStyle = Math.abs(p) > .75 ? '#ff4040' : '#fff';
       ctx.fillRect(W / 2 + p * mw / 2 - 3, my - 4, 6, 16);
-      if (state === 'play' && !input.walking && s.dist < 3) {
-        ctx.font = '18px serif'; ctx.fillStyle = '#ccc';
+      // 心拍メーター
+      const hy = 92, hb = 1 + Math.max(0, Math.sin(s.heartPhase)) * .35;
+      ctx.save(); ctx.translate(mx + 8, hy + 4); ctx.scale(hb, hb);
+      ctx.fillStyle = '#ff3355'; ctx.font = '18px sans-serif'; ctx.fillText('♥', 0, 6);
+      ctx.restore();
+      ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(mx + 22, hy, mw - 22, 8);
+      const hc = s.heart < .5 ? '#5fd08a' : s.heart < .8 ? '#ffb340' : '#ff3355';
+      ctx.fillStyle = hc; ctx.fillRect(mx + 22, hy, (mw - 22) * s.heart, 8);
+      ctx.font = '12px sans-serif'; ctx.textAlign = 'right'; ctx.fillStyle = hc;
+      ctx.fillText(`${Math.round(60 + s.heart * 120)} bpm`, mx + mw, hy + 22);
+      ctx.textAlign = 'center';
+      if (state === 'play' && !s.walked) {
+        ctx.font = '18px serif'; ctx.fillStyle = '#ddd';
         ctx.fillText('画面を押している間だけ進む', W / 2, H * .5);
       }
     }
